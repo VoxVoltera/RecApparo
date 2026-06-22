@@ -1,0 +1,4 @@
+| name      | type | constraints                                        | description | notes                              |
+|-----------|------|----------------------------------------------------|-------------|------------------------------------|
+| TICKET_ID | UUID | NOT NULL. REFERENCES tickets(ID) ON DELETE CASCADE |             | Composite PK (TICKET_ID + USER_ID) |
+| USER_ID   | UUID | NOT NULL. REFERENCES users(ID) ON DELETE CASCADE   |             | Composite PK (TICKET_ID + USER_ID) |

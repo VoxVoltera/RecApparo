@@ -1,0 +1,446 @@
+\> RecApparō Specsheet — v0.1
+\> by @Voxvoltera | development@voxvoltera.com
+\> last updated: 19/06/2026
+\> status: draft
+
+# 0 Revision history
+
+This document is versioned independently of the code. Bump the version on any change to a spec entry and log it here so the Kanban board and the spec never drift apart.
+
+| Version | Date       | Author      | Notes         |
+|---------|------------|-------------|---------------|
+| 0.1     | 19/06/2026 | @Voxvoltera | Initial draft |
+
+# 1 Introduction
+## 1.1 Purpose
+RecApparō is a kanban-style work-tracking application. This document is the single source of truth for both frontend and backend development — the data model, the API surface, the permission rules, and the behaviour of every operation. Implementation follows the entries here; any deviation is agreed with the maintainers and written back into this document before it ships.
+
+## 1.2 How to read this
+This is a reference manual, not a task list. Implementation order is dictated by the Kanban board, and each ticket maps to a specific entry (e.g. [3.1.2]) so the work matches the design. Sections 1–5 are context and contracts that apply across the whole system; section 6 is the per-operation detail.
+
+## 1.3 Scope
+In scope for v0.1:
+
+- Boards, with per-board columns (status lanes)
+- Tickets, including nested boards (a ticket can contain a board)
+- Comments, including threaded replies
+- Tags, global and board-local, with a "special" flag
+- Users, teams, and team membership with roles
+- Ticket assignment and tagging
+
+Out of scope for v0.1 (revisit later): real-time collaboration, notifications, file attachments, search, and any mobile-specific client.
+
+## 1.4 Goals & non-goals
+Goals: a clean separation between frontend and backend that lets the two be built in parallel; a normalised data model with referential integrity enforced by the database; permission rules enforced server-side.
+
+Non-goals: this is not a general project-management suite (no Gantt charts, time tracking, or billing), and it does not aim to be a real-time multiplayer editor in this revision.
+
+## 1.5 Glossary & abbreviations
+**Board** — a container of columns and tickets.
+**Column** — a status lane within a board (e.g. To Do / Doing / Done); ordering is per board.
+**Ticket** — a card on a board, sitting in exactly one column.
+**Sub-board** — a board contained by a ticket (drilling into the ticket opens it).
+**Mother ticket** — the inverse: the ticket that contains a given sub-board.
+**Comment** — a note on a ticket; comments can reply to other comments.
+**Tag** — a label applied to tickets; *global* (any board) or *board-local*.
+**Special tag** — a tag flagged `SPECIAL = true`; same table, distinguished by the flag.
+**Team** — a group of users.
+**Role** — a user's capability level within a team (owner / admin / member).
+**FK** — foreign key; **PK** — primary key; **Composite PK** — a key spanning two columns.
+
+## 1.6 Actors & roles
+Roles are defined per team (see `team_members.ROLE`):
+
+- **Owner** — full control of the team and its boards; manages members and roles.
+- **Admin** — manages boards, columns, tickets, and tags; cannot remove the owner.
+- **Member** — works within boards: creates and edits tickets, comments, and assignments.
+
+A user may belong to several teams and hold a different role in each. The exact capability-to-role mapping is defined in 4.5.
+```{=latex}
+\newpage
+```
+# 2. System overview
+## 2.1 Architecture
+Three tiers: client → backend → database.
+
+The clients never connect to the database directly. The Go backend owns every query and is the only component holding database credentials; it is also where all permission checks run, so a client cannot bypass them. PostgreSQL is the system of record, with referential integrity enforced by foreign keys and check constraints (section 3).
+
+## 2.2 Tech stack & dependencies
+- **Backend:** Go
+- **Database:** PostgreSQL
+- **IDs:** `github.com/google/uuid` (UUID primary keys)
+- **HTTP router / framework:** *TODO — confirm choice*
+- **Frontend:** *TODO — confirm choice*
+- **DB driver / access layer:** *TODO — e.g. pgx, sqlc, or an ORM*
+
+## 2.3 Environments & configuration
+Three environments — development, staging, production — sharing one schema. All configuration (database DSN, listen address, secrets) is supplied through environment variables; no secrets live in the repository. *TODO: list the required variables once finalised.*
+
+# 3 Data model
+*the database — persisted source of truth (see the table CSVs)*
+
+Conventions used throughout: primary keys are UUIDs; timestamps are `TIMESTAMPTZ` (timezone-aware); column names are upper snake case. A column with no `NOT NULL` is nullable. Where a nullable FK has a meaning attached to NULL, it is stated in that table's `notes`.
+
+## 3.1 Shared enums & types
+**Team role** (`team_members.ROLE`, TEXT): `owner`, `admin`, `member`. Defaults to `member`.
+**Tag colour** (`tags.COLOUR`, TEXT): a hex string matching `^#[0-9A-Fa-f]{6}$`, e.g. `#1D9E75`.
+**Status / columns:** status is *not* an enum — it is modelled as rows in the `columns` table so each board defines its own lanes (3.2.3).
+
+## 3.2 Tables
+### 3.2.1 boards
+```{=latex}
+\begin{tiny}
+```
+```md
+| name          | type        | constraints                                       | description                     | notes                  |
+|---------------|-------------|---------------------------------------------------|---------------------------------|------------------------|
+| ID            | UUID        | PRIMARY KEY                                       |                                 |                        |
+| NAME          | TEXT        | NOT NULL. CHECK(LENGTH(NAME) \< 1000)             |                                 |                        |
+| DESCRIPTION   | TEXT        | CHECK(LENGTH(DESCRIPTION) \< 10000)               |                                 |                        |
+| AUTHOR        | UUID        | NOT NULL. REFERENCES users(ID) ON DELETE RESTRICT |                                 |                        |
+| CREATION      | TIMESTAMPTZ | NOT NULL. DEFAULT now()                           |                                 |                        |
+| MOTHER_TICKET | UUID        | REFERENCES tickets(ID) ON DELETE CASCADE          | Ticket that contains this board | null = top-level board |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.2 tickets
+```{=latex}
+\begin{tiny}
+```
+```md
+| name        | type        | constraints                                         | description                | notes                                             |
+|-------------|-------------|-----------------------------------------------------|----------------------------|---------------------------------------------------|
+| ID          | UUID        | PRIMARY KEY                                         |                            |                                                   |
+| NAME        | TEXT        | NOT NULL. CHECK(LENGTH(NAME) \< 1000)               |                            |                                                   |
+| DESCRIPTION | TEXT        | CHECK(LENGTH(DESCRIPTION) \< 10000)                 |                            |                                                   |
+| AUTHOR      | UUID        | NOT NULL. REFERENCES users(ID) ON DELETE RESTRICT   |                            |                                                   |
+| CREATION    | TIMESTAMPTZ | NOT NULL. DEFAULT now()                             |                            |                                                   |
+| DUE_DATE    | TIMESTAMPTZ |                                                     |                            |                                                   |
+| BOARD_ID    | UUID        | NOT NULL. REFERENCES boards(ID) ON DELETE CASCADE   | Board the ticket lives on  |                                                   |
+| COLUMN_ID   | UUID        | NOT NULL. REFERENCES columns(ID) ON DELETE RESTRICT |                            | Added: was missing from the struct                |
+| SUB_BOARD   | UUID        | REFERENCES boards(ID) ON DELETE SET NULL            | Board this ticket contains | Add UNIQUE if one board has a single owner ticket |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.3 columns
+```{=latex}
+\begin{tiny}
+```
+```md
+| name     | type    | constraints                                       | description | notes                             |
+|----------|---------|---------------------------------------------------|-------------|-----------------------------------|
+| ID       | UUID    | PRIMARY KEY                                       |             |                                   |
+| BOARD_ID | UUID    | NOT NULL. REFERENCES boards(ID) ON DELETE CASCADE |             |                                   |
+| NAME     | TEXT    | NOT NULL. CHECK(LENGTH(NAME) \< 1000)             |             |                                   |
+| POSITION | INTEGER | NOT NULL. CHECK(POSITION \>= 0)                   |             | 0-based ordering within the board |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.4 comments
+```{=latex}
+\begin{tiny}
+```
+```md
+| name      | type        | constraints                                        | description                         | notes                    |
+|-----------|-------------|----------------------------------------------------|-------------------------------------|--------------------------|
+| ID        | UUID        | PRIMARY KEY                                        |                                     |                          |
+| AUTHOR    | UUID        | NOT NULL. REFERENCES users(ID) ON DELETE RESTRICT  |                                     |                          |
+| CREATION  | TIMESTAMPTZ | NOT NULL. DEFAULT now()                            |                                     |                          |
+| CONTENT   | TEXT        | NOT NULL. CHECK(LENGTH(CONTENT) \< 10000)          |                                     |                          |
+| TICKET_ID | UUID        | NOT NULL. REFERENCES tickets(ID) ON DELETE CASCADE |                                     |                          |
+| PARENT_ID | UUID        | REFERENCES comments(ID) ON DELETE CASCADE          | Parent comment when this is a reply | null = top-level comment |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.5 tags
+```{=latex}
+\begin{tiny}
+```
+```md
+| name        | type    | constraints                                      | description | notes             |
+|-------------|---------|--------------------------------------------------|-------------|-------------------|
+| ID          | UUID    | PRIMARY KEY                                      |             |                   |
+| NAME        | TEXT    | NOT NULL. CHECK(LENGTH(NAME) \< 1000)            |             |                   |
+| DESCRIPTION | TEXT    | CHECK(LENGTH(DESCRIPTION) \< 10000)              |             |                   |
+| COLOUR      | TEXT    | NOT NULL. CHECK(COLOUR ~ '^#\[0-9A-Fa-f\]{6}\$') |             | e.g. \#1D9E75     |
+| SPECIAL     | BOOLEAN | NOT NULL. DEFAULT false                          |             |                   |
+| BOARD_ID    | UUID    | REFERENCES boards(ID) ON DELETE CASCADE          |             | null = global tag |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.6 users
+```{=latex}
+\begin{tiny}
+```
+```md
+| name | type | constraints                           | description | notes |
+|------|------|---------------------------------------|-------------|-------|
+| ID   | UUID | PRIMARY KEY                           |             |       |
+| NAME | TEXT | NOT NULL. CHECK(LENGTH(NAME) \< 1000) |             |       |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.7 teams
+```{=latex}
+\begin{tiny}
+```
+```md
+| name | type | constraints                           | description | notes |
+|------|------|---------------------------------------|-------------|-------|
+| ID   | UUID | PRIMARY KEY                           |             |       |
+| NAME | TEXT | NOT NULL. CHECK(LENGTH(NAME) \< 1000) |             |       |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.8 ticket_tags
+```{=latex}
+\begin{tiny}
+```
+```md
+| name      | type | constraints                                        | description | notes                             |
+|-----------|------|----------------------------------------------------|-------------|-----------------------------------|
+| TICKET_ID | UUID | NOT NULL. REFERENCES tickets(ID) ON DELETE CASCADE |             | Composite PK (TICKET_ID + TAG_ID) |
+| TAG_ID    | UUID | NOT NULL. REFERENCES tags(ID) ON DELETE CASCADE    |             | Composite PK (TICKET_ID + TAG_ID) |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.9 ticket_assignee
+```{=latex}
+\begin{tiny}
+```
+```md
+| name      | type | constraints                                        | description | notes                              |
+|-----------|------|----------------------------------------------------|-------------|------------------------------------|
+| TICKET_ID | UUID | NOT NULL. REFERENCES tickets(ID) ON DELETE CASCADE |             | Composite PK (TICKET_ID + USER_ID) |
+| USER_ID   | UUID | NOT NULL. REFERENCES users(ID) ON DELETE CASCADE   |             | Composite PK (TICKET_ID + USER_ID) |
+```
+```{=latex}
+\end{tiny}
+```
+### 3.2.10 team_members
+```{=latex}
+\begin{tiny}
+```
+```md
+| name    | type | constraints                                      | description | notes                            |
+|---------|------|--------------------------------------------------|-------------|----------------------------------|
+| TEAM_ID | UUID | NOT NULL. REFERENCES teams(ID) ON DELETE CASCADE |             | Composite PK (TEAM_ID + USER_ID) |
+| USER_ID | UUID | NOT NULL. REFERENCES users(ID) ON DELETE CASCADE |             | Composite PK (TEAM_ID + USER_ID) |
+| ROLE    | TEXT | NOT NULL. DEFAULT 'member'                       |             | e.g. owner / admin / member      |
+```
+```{=latex}
+\end{tiny}
+```
+## 3.4 Relationships overview
+One-to-many (FK on the child): a board has many columns and many tickets; a column holds many tickets; a ticket has many comments. Comments are self-referential — a comment may have a parent comment, forming reply threads.
+
+Many-to-many (via join tables): tickets and tags through `ticket_tags`; tickets and users (assignment) through `ticket_assignee`; users and teams through `team_members`, which also carries the role.
+
+The board–ticket nesting is circular: a ticket points down into a board (`tickets.SUB_BOARD`) and a board points back up to its containing ticket (`boards.MOTHER_TICKET`). Because the two tables reference each other, create both tables first and add the foreign keys afterwards (or mark them `DEFERRABLE`); neither can reference a table that doesn't yet exist.
+```{=latex}
+\newpage
+```
+# 4 API conventions
+These apply to every operation in section 6 so individual entries don't repeat them.
+
+## 4.1 Auth & sessions
+A client authenticates with credentials and receives a session token; that token accompanies every subsequent request, and the backend resolves it to the current user before doing anything else. Passwords are stored hashed, never in plaintext. *TODO: confirm token mechanism (opaque session token vs JWT) and expiry policy.*
+
+## 4.2 Request / response format
+Requests and responses are JSON over HTTP. A successful response returns the relevant resource (or a status line); a failure returns an error code from section 7.1 together with a human-readable message. The shapes of resources follow the structs in section 5.
+
+## 4.3 Pagination, filtering, sorting
+List endpoints page their results rather than returning everything. *TODO: settle on limit/offset or cursor-based paging, and define the common filter and sort parameters.*
+
+## 4.4 Versioning
+The API is versioned in the path (e.g. `/api/v1/...`). Breaking changes bump the version; additive changes do not. The document revision (section 0) tracks spec changes independently.
+
+## 4.5 Permission model
+Every operation declares the role it requires. The backend enforces this after resolving the current user (4.1) — permission checks never run on the client. Checks combine team role with scope: a user only acts on boards belonging to a team they are a member of, at the role that operation requires.
+
+| Capability                         | Member | Admin | Owner |
+|------------------------------------|:------:|:-----:|:-----:|
+| View boards / tickets / comments   |   Y    |   Y   |   Y   |
+| Create / edit tickets, comments    |   Y    |   Y   |   Y   |
+| Manage columns, tags, boards       |        |   Y   |   Y   |
+| Manage members and roles           |        |       |   Y   |
+
+*Draft — adjust the rows to match the operations you settle on in section 6.*
+
+## 4.6 Error handling
+All failures resolve to a code from section 7.1, returned as `code | message`. Operations list the specific codes they can return in their `Errors` field.
+
+
+
+# 5 Models
+*the Go structs over the schema (source of truth: models.go)*
+## 5.1 Structs
+### 5.1.1 Board
+```go
+type Board struct {
+	ID           uuid.UUID
+	Name         string
+	Description  string
+	Author       uuid.UUID // user
+	Creation     time.Time
+	Tags         []Tag
+	MotherTicket *uuid.UUID // ticket
+	Tickets      []Ticket
+}
+```
+
+### 5.1.2 Ticket
+```go
+type Ticket struct {
+	ID          uuid.UUID
+	Name        string
+	Description string
+	Comments    []Comment
+	Author      uuid.UUID // user
+	Creation    time.Time
+	DueDate     time.Time
+	Tags        []Tag
+	BoardID     uuid.UUID  // mother board
+	SubBoard    *uuid.UUID // board
+	Assigned    []User
+	ColumnID uuid.UUID
+}
+```
+```{=latex}
+\newpage
+```
+### 5.1.3 Comment
+```go
+type Comment struct {
+	ID       uuid.UUID
+	Author   uuid.UUID // user
+	Creation time.Time
+	Content  string
+	Replies  []Comment
+	TicketID uuid.UUID  // mother ticket
+	ParentID *uuid.UUID // parent comment
+}
+```
+
+### 5.1.4 User
+```go
+type User struct {
+	ID       uuid.UUID
+	Name     string
+	Teams    []Team
+	Assigned []Ticket
+}
+```
+
+### 5.1.5 Tag
+```go
+type Tag struct {
+	ID          uuid.UUID
+	Name        string
+	Description string
+	Colour      string // hex
+	Special     bool
+	BoardID     *uuid.UUID // board, nil = global
+}
+```
+
+### 5.1.6 Team
+```go
+type Team struct {
+	ID      uuid.UUID
+	Name    string
+	Members []User
+}
+```
+```{=latex}
+\newpage
+```
+### 5.1.7 Column
+```go
+type Column struct {
+	ID       uuid.UUID
+	BoardID  uuid.UUID // board
+	Name     string
+	Position int
+}
+```
+
+### 5.1.8 TicketTag
+```go
+type TicketTag struct {
+	TicketID uuid.UUID // ticket
+	TagID    uuid.UUID // tag
+}
+```
+
+### 5.1.9 Ticket Assignee
+```go
+type TicketAssignee struct {
+	TicketID uuid.UUID // ticket
+	UserID   uuid.UUID // user
+}
+```
+
+### 5.1.10 Team Member
+```go
+type TeamMember struct {
+	TeamID uuid.UUID // team
+	UserID uuid.UUID // user
+	Role   string
+}
+```
+```{=latex}
+\newpage
+```
+## 5.2 Struct to table mapping
+The structs are not a one-to-one mirror of the tables — some fields are columns, others are relationships the backend loads.
+
+Scalar fields map directly to columns (`ID`, `Name`, `BoardID`, `Creation`, …).
+
+Slice fields are loaded relationships, not columns: `Board.Tickets`, `Board.Tags`, `Ticket.Comments`, `Ticket.Assigned`, `Comment.Replies`, `User.Teams`, `Team.Members`. They are populated by querying the relevant FK or join table, never stored on the parent row. The many-to-many slices are backed by the join tables — `Tags` by `ticket_tags`, `Assigned` by `ticket_assignee`, `Teams`/`Members` by `team_members`.
+
+Pointer fields (`*uuid.UUID`) are the nullable foreign keys: `Board.MotherTicket`, `Ticket.SubBoard`, `Comment.ParentID`, and `Tag.BoardID`. A `nil` means the relationship is absent (top-level board, no sub-board, top-level comment, global tag).
+
+Loaded relationships are filled lazily. This matters most for the board–ticket nesting: loading a board could otherwise cascade into its tickets, their sub-boards, and so on, so the backend only loads one level at a time.
+
+# 6 Non-functional requirements
+## 6.1 Security
+Permissions are enforced server-side only (4.5); clients hold no database credentials. Passwords are hashed at rest. All client–backend traffic is over TLS. Inputs are validated against the constraints in section 3 before they reach the database.
+
+## 6.2 Privacy & data protection
+Deleting a user is blocked while they still author boards, tickets, or comments (`ON DELETE RESTRICT`); reassign or handle that content first. Deleting a board cascades to its columns, tickets, and the tickets' comments. *TODO: define a data-retention and account-deletion policy.*
+
+## 6.3 Performance & scalability
+Index foreign keys that drive list queries (`tickets.BOARD_ID`, `tickets.COLUMN_ID`, the join-table columns). Load a board's tickets with a single `WHERE board_id = ?` rather than per-ticket lookups, to avoid the N+1 pattern. List endpoints page their results (4.3). *TODO: set concrete latency and throughput targets.*
+
+## 6.4 Reliability
+*backups, availability*
+Regular automated database backups with a defined restore procedure. *TODO: state the backup cadence, retention window, and any availability target.*
+
+## 6.5 Accessibility & i18n
+*TODO: state the accessibility standard the frontend targets and whether localisation is in scope.*
+
+# 7 Cross-cutting
+## 7.1 Error codes
+Errors are returned as `code | message`. `0` is success; everything else is a failure. *Draft — extend as operations are written.*
+
+| Code | Meaning                         |
+|------|---------------------------------|
+| 0    | Success                         |
+| 1    | Bad request / invalid input     |
+| 2    | Unauthenticated                 |
+| 3    | Forbidden (insufficient role)   |
+| 4    | Not found                       |
+| 5    | Conflict (constraint violation) |
+| 9    | Internal error                  |
+
+## 7.2 Logging & monitoring
+The backend emits structured logs for every request (who, what, outcome). Mutations to boards, tickets, and permissions are logged so changes are traceable. *TODO: choose a log format and a monitoring/alerting destination.*

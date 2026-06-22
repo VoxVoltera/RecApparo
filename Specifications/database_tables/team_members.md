@@ -1,0 +1,5 @@
+| name    | type | constraints                                      | description | notes                            |
+|---------|------|--------------------------------------------------|-------------|----------------------------------|
+| TEAM_ID | UUID | NOT NULL. REFERENCES teams(ID) ON DELETE CASCADE |             | Composite PK (TEAM_ID + USER_ID) |
+| USER_ID | UUID | NOT NULL. REFERENCES users(ID) ON DELETE CASCADE |             | Composite PK (TEAM_ID + USER_ID) |
+| ROLE    | TEXT | NOT NULL. DEFAULT 'member'                       |             | e.g. owner / admin / member      |
