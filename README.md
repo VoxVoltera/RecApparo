@@ -1,2 +1,5 @@
-# RecApparo
-RecApparō is a new way to manage your time and schedule. it takes the widely popular kanban board, and makes it reccursive, thereby allowing for organisation in a whole new way
+# RecApparō
+
+RecApparō is a Kanban-based application for task and work management. Work is organised into boards, where tasks (tickets) are placed in columns and moved between them as they progress — from ‘to do’ to ‘done’, or whichever stages the individual board requires.
+The aim of the project is to build a flexible and self-contained task management system that does not lock the user into a single, fixed workflow. Each board defines its own columns, so the structure can be tailored to the team or project it is designed to support. A distinctive feature is that a ticket can itself contain an entire board — meaning a task can be expanded into its own sub-project with its own tickets. On top of this come tags (global or tied to a single board), threaded comments and teams with roles, so the system can grow from a single user’s task list into a shared tool for multiple teams.
+Technically, RecApparō is built in Go with PostgreSQL as the database and a dedicated backend layer in between: clients never communicate directly with the database — the backend handles all queries and enforces permissions, so that access control cannot be circumvented from the client side. The data model is normalised across ten tables with UUIDs as primary keys and referential integrity enforced within the database itself.
