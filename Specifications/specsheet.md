@@ -10,7 +10,7 @@ This document is versioned independently of the code. Bump the version on any ch
 | Version | Date       | Author      | Notes         |
 |---------|------------|-------------|---------------|
 | 0.1     | 19/06/2026 | @Voxvoltera | Initial draft |
-| 0.2     | 22/06/2026 | @Voxvoltera | Local/server architecture: SQLite local store, embedded backend over a loopback websocket, single-binary distribution, local-no-account vs team-login boundary, optional at-rest encryption, forward-looking sync model |
+| 0.2     | 22/06/2026 | @Voxvoltera | Local/server architecture |
 
 # 1 Introduction
 ## 1.1 Purpose
@@ -79,11 +79,11 @@ The backend is written once as well: it reaches its database through a single st
 - **Backend:** Go
 - **Databases:** PostgreSQL (server) and SQLite (local)
 - **SQLite driver:** `modernc.org/sqlite` — pure Go, no CGO, so the local build stays a single statically-linked cross-platform binary
-- **PostgreSQL driver:** *TODO — likely `pgx`*
+- **PostgreSQL driver:** pgx
 - **Data-access layer:** a hand-written `Store` interface with two implementations (2.4); no ORM
 - **IDs:** `github.com/google/uuid` (UUID primary keys) — also the offline ID-generation strategy: clients mint IDs locally without server coordination, which is what lets local and synced rows share one namespace
 - **Client transport:** websocket (same protocol local and remote); *TODO — confirm websocket library and whether any plain HTTP endpoints are also exposed*
-- **Frontend:** *TODO — confirm choice*
+- **Frontend:** svelte5
 
 ## 2.3 Environments & configuration
 Server mode uses three environments — development, staging, production — sharing one schema. Server configuration (database DSN, listen address, secrets) is supplied through environment variables; no secrets live in the repository. *TODO: list the required variables once finalised.*
@@ -272,7 +272,7 @@ The board–ticket nesting is circular: a ticket points down into a board (`tick
 
 Two areas need a decision before team sync is built.
 
-**Account-less authorship.** In local mode there is no authenticated user, yet `boards.AUTHOR`, `tickets.AUTHOR`, and `comments.AUTHOR` are `NOT NULL REFERENCES users(ID)`. Local mode therefore needs either a synthetic local user row, or these author FKs relaxed to nullable for local-only rows. *TODO: decide which — this is the one open conflict between the no-account local model and the current schema.*
+**Account-less authorship.** In local mode there is no authenticated user, yet `boards.AUTHOR`, `tickets.AUTHOR`, and `comments.AUTHOR` are `NOT NULL REFERENCES users(ID)`. Local mode therefore needs a synthetic local user row
 
 **Sync scope and metadata.** The unit of synchronisation is a team and the board subtree it owns (board → columns → tickets → comments / tags / assignees). A board is local-only or team-owned; marking that distinction (e.g. a nullable team reference on `boards`, NULL = local) plus per-row change tracking (`updated_at`, a tombstone/soft-delete column so deletes propagate, and a revision or dirty flag for push) is what sync will require. UUID primary keys already let local and server rows share one namespace without collisions, and last-write-wins on `updated_at` is the cheapest starting conflict policy.
 
